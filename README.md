@@ -1,0 +1,2 @@
+# salzlage
+Salz checker tool 
