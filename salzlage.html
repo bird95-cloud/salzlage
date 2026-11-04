@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Salzlage</title>
+<style>
+:root{--bg:#eceeed;--card:#fafbfa;--ink:#22282c;--mut:#667078;--line:#cfd5d6;--lo:#7da0b3;--hi:#c7822a;--ok:#2f6f5e}
+@media(prefers-color-scheme:dark){:root{--bg:#1b1f22;--card:#252a2e;--ink:#e8ecec;--mut:#98a3a9;--line:#3a4247;--lo:#6f93a6;--hi:#e09a45;--ok:#5fb59d}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 60px}
+h1{font:700 28px Georgia,serif;margin:0 0 2px}h2{font:700 18px Georgia,serif;margin:0 0 10px}
+.sub{color:var(--mut);margin:0 0 18px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:16px;margin-bottom:14px}
+select,input,button{font:inherit;color:inherit;background:var(--card);border:1px solid var(--line);border-radius:4px;padding:8px 10px}
+button{cursor:pointer;background:var(--ink);color:var(--bg);border-color:var(--ink)}button.g{background:none;color:var(--ink);border-color:var(--line)}
+:focus-visible{outline:2px solid var(--hi);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}.row>input{flex:1;min-width:200px}
+.big{font:700 56px/1 Georgia,serif}.big small{font-size:22px}
+.pt{display:grid;grid-template-columns:1fr 110px;gap:4px 12px;padding:10px 0;border-top:1px solid var(--line);cursor:pointer}
+.pt:first-of-type{border-top:0}.pt.sel{background:color-mix(in srgb,var(--hi) 8%,transparent)}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;align-self:center}.bar i{display:block;height:100%}
+.m{color:var(--mut);font-size:13px;grid-column:1/-1}
+svg{width:100%;height:auto;display:block}
+.err{color:#b33;font-size:14px}ul{padding-left:18px;margin:6px 0}li{margin:3px 0;font-size:14px}
+</style></head><body><main>
+<h1>Salzlage</h1>
+<p class="sub">Schätzt aus Wetterdaten, ob jetzt noch Streusalz auf der Straße liegt. Eine Schätzung, keine amtliche Auskunft.</p>
+
+<div class="card">
+<div class="row"><select id="rt" aria-label="Strecke"></select><button id="go">Prüfen</button></div>
+<div class="row"><input id="q" placeholder="Eigene Strecke: Orte mit → trennen, z. B. Böblingen → Sindelfingen → Weil der Stadt">
+<button class="g" id="sv">Als Strecke speichern</button></div>
+<div id="st" class="sub" style="margin:0"></div>
+</div>
+
+<div id="res"></div>
+
+<div class="card"><h2>Beobachtung melden</h2>
+<p class="sub">Salz gesehen (weißer Film, Krusten) oder bewusst nicht? Beides hilft dem Modell beim Lernen.</p>
+<div class="row"><select id="op" aria-label="Ort"></select><input type="datetime-local" id="ot">
+<select id="oy"><option value="1">Salz gesehen</option><option value="0">Kein Salz</option></select><button id="oa">Speichern</button></div>
+<div id="ol"></div>
+<div class="row"><button class="g" id="ex">Sichern</button><label class="g" style="border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer">Laden<input type="file" id="im" accept=".json" hidden></label></div>
+</div>
+<div class="card"><h2>Modellgüte</h2><div id="gq"></div></div>
+</main>
+<script>
+const $=s=>document.querySelector(s),sig=x=>1/(1+Math.exp(-x));
+const DEF={"Stuttgart → Weissach (Stammstrecke)":[["Stuttgart Mitte",48.778,9.18],["Feuerbach",48.809,9.16],["Leonberg",48.799,9.013],["Rutesheim",48.812,8.942],["Weissach",48.828,8.923]]};
+const PRI={T0:1.5,kr:0.5,kd:0.004,a:0.15};
+const ld=(k,d)=>{try{return JSON.parse(localStorage.getItem(k))??d}catch(e){return d}},sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+let routes={...DEF,...ld('sz_routes',{})},obs=ld('sz_obs',[]),fit=ld('sz_fit',null),cur=[],last=[],selI=0;
+const TH=()=>fit?fit.th:PRI;
+
+// Modell: stündliche Salz-Wahrscheinlichkeit P, Streu-Wahrscheinlichkeit sp
+function run(w,th){let P=0.1,o=[],s=[],wet=0;
+ for(let i=0;i<w.t.length;i++){const pr=w.pr[i]||0,sn=w.sn[i]||0,T=w.T[i],Td=w.Td[i],Ts=w.soil[i]??T;
+  wet=pr>0.1?6:Math.max(0,wet-1);
+  const d=(pr>0.1||sn>0)?1:(T-Td<1.5&&Ts<0.5)?0.8:wet>0?0.6:0;
+  const sp=sig((th.T0-Ts)/1.0)*d*th.a*(T<-12?0.6:1);
+  const loss=th.kd+(pr>0.1?th.kr*pr*(sn>0?0.5:1)*(Ts<0?0.4:1)+0.03:0);
+  P=1-(1-P*Math.exp(-loss))*(1-sp);o.push(P);s.push(sp)}
+ return{P:o,sp:s}}
+function rng(a){return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function mc(w,th,n){const r=rng(42),g=()=>Math.sqrt(-2*Math.log(r()+1e-9))*Math.cos(6.283*r()),j=1/(1+n/8),runs=[];
+ for(let k=0;k<80;k++)runs.push(run(w,{T0:th.T0+g()*1.0*j,kr:th.kr*Math.exp(g()*0.5*j),kd:th.kd*Math.exp(g()*0.7*j),a:th.a*Math.exp(g()*0.5*j)}).P);
+ const q=(i,p)=>runs.map(x=>x[i]).sort((a,b)=>a-b)[Math.floor(p*(runs.length-1))];
+ return w.t.map((_,i)=>({m:q(i,.5),lo:q(i,.1),hi:q(i,.9)}))}
+
+async function jget(u){const r=await fetch(u);if(!r.ok)throw Error('Datenabruf fehlgeschlagen ('+r.status+')');return r.json()}
+async function weather(pts,past){const j=await jget(`https://api.open-meteo.com/v1/forecast?latitude=${pts.map(p=>p[1]).join()}&longitude=${pts.map(p=>p[2]).join()}&hourly=temperature_2m,dew_point_2m,precipitation,snowfall,soil_temperature_0cm&past_days=${past}&forecast_days=1&timezone=Europe%2FBerlin`);
+ return(Array.isArray(j)?j:[j]).map(o=>({t:o.hourly.time,T:o.hourly.temperature_2m,Td:o.hourly.dew_point_2m,pr:o.hourly.precipitation,sn:o.hourly.snowfall,soil:o.hourly.soil_temperature_0cm,elev:o.elevation}))}
+async function geo(n){const j=await jget(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(n)}&count=1&language=de`);const r=j.results?.[0];if(!r)throw Error('Ort nicht gefunden: '+n);return[r.name,r.latitude,r.longitude]}
+const hourNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`}
+const fmt=s=>{const d=new Date(s);return d.toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'})+' Uhr'}
+
+async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';
+ try{let pts;const q=$('#q').value.trim();
+  if(q){pts=[];for(const n of q.split(/→|->|;|>/).map(s=>s.trim()).filter(Boolean))pts.push(await geo(n))}else pts=routes[$('#rt').value];
+  const ws=await weather(pts,14),n=fit?fit.n:0,th=TH();cur=pts;
+  last=ws.map((w,k)=>{let c=w.t.findIndex(t=>t>hourNow());c=c<0?w.t.length:c;
+   const x={t:w.t.slice(0,c),T:w.T.slice(0,c),Td:w.Td.slice(0,c),pr:w.pr.slice(0,c),sn:w.sn.slice(0,c),soil:w.soil.slice(0,c)};
+   const r=run(x,th),b=mc(x,th,n),e=b[b.length-1];
+   let ev=-1;for(let i=x.t.length-1;i>=0;i--)if(r.sp[i]>0.06){ev=i;break}
+   const rain=ev<0?0:x.pr.slice(ev+1).reduce((a,v)=>a+(v||0),0);
+   return{name:pts[k][0],elev:w.elev,x,b,e,ev,rain,T:x.T[x.T.length-1],Ts:x.soil[x.soil.length-1]}});
+  selI=last.reduce((m,v,i)=>v.e.m>last[m].e.m?i:m,0);
+  st.textContent='Stand: '+fmt(hourNow());render();opts()}
+ catch(e){st.className='err';st.textContent=e.message+' – Internetverbindung prüfen.'}}
+
+const col=p=>`color-mix(in srgb,var(--hi) ${Math.round(p*100)}%,var(--lo))`;
+function render(){const top=last[selI],n=fit?fit.n:0,w=Math.round((top.e.hi-top.e.lo)*100);
+ const lab=w<15?'hoch':w<35?'mittel':'niedrig';
+ let h=`<div class="card"><div class="m" style="color:var(--mut);font-size:14px">Höchste Teilstelle der Strecke: ${top.name}</div>
+ <div class="big" style="color:${col(top.e.m)}">${Math.round(top.e.m*100)}<small> % Salz auf der Straße</small></div>
+ <p class="sub" style="margin:8px 0 0">Spannweite ${Math.round(top.e.lo*100)}–${Math.round(top.e.hi*100)} % · Prognosegüte (modellintern): <b>${lab}</b>${n?'':' · noch nicht an Beobachtungen geeicht'}</p></div>
+ <div class="card"><h2>Teilstücke</h2>`;
+ last.forEach((v,i)=>{h+=`<div class="pt ${i==selI?'sel':''}" data-i="${i}"><div><b>${v.name}</b> <span class="sub">${Math.round(v.elev)} m · ${v.T.toFixed(1)} °C Luft, ${v.Ts==null?'–':v.Ts.toFixed(1)} °C Boden</span></div>
+  <div><b>${Math.round(v.e.m*100)} %</b> <span class="sub">(${Math.round(v.e.lo*100)}–${Math.round(v.e.hi*100)})</span></div>
+  <div class="bar" style="grid-column:1/-1"><i style="width:${v.e.m*100}%;background:${col(v.e.m)}"></i></div>
+  <div class="m">${v.ev<0?'Kein wahrscheinlicher Streueinsatz in den letzten 14 Tagen.':'Wahrscheinlich zuletzt gestreut: '+fmt(v.x.t[v.ev])+' · seitdem '+v.rain.toFixed(1)+' mm Niederschlag'}</div></div>`});
+ $('#res').innerHTML=h+`</div><div class="card"><h2>Verlauf, 7 Tage: ${last[selI].name}</h2>${chart(last[selI])}<p class="sub" style="margin:4px 0 0">Linie: Salz-Wahrscheinlichkeit mit Unsicherheitsband. Balken: Niederschlag.</p></div>`;
+ document.querySelectorAll('.pt').forEach(e=>e.onclick=()=>{selI=+e.dataset.i;render()});quality()}
+function chart(v){const N=Math.min(168,v.x.t.length),o=v.x.t.length-N,W=700,H=190,x=i=>i/(N-1)*W,y=p=>H-10-p*(H-30);
+ let a='',b='',s='',mx=Math.max(2,...v.x.pr.slice(o).map(z=>z||0));
+ for(let i=0;i<N;i++){const d=v.b[o+i];a+=`${i?'L':'M'}${x(i).toFixed(1)},${y(d.m).toFixed(1)}`;b+=`${x(i).toFixed(1)},${y(d.hi).toFixed(1)} `;s=`${x(i).toFixed(1)},${y(d.lo).toFixed(1)} `+s;
+  const r=v.x.pr[o+i]||0;if(r>0)a+='';}
+ let bars='';for(let i=0;i<N;i++){const r=v.x.pr[o+i]||0;if(r>0)bars+=`<rect x="${x(i)-1}" y="0" width="2.5" height="${r/mx*40}" fill="var(--lo)" opacity=".7"/>`}
+ let days='';for(let i=0;i<N;i++)if(v.x.t[o+i].endsWith('T00:00'))days+=`<line x1="${x(i)}" x2="${x(i)}" y1="0" y2="${H-10}" stroke="var(--line)"/><text x="${x(i)+3}" y="${H+2}" font-size="11" fill="var(--mut)">${new Date(v.x.t[o+i]).toLocaleDateString('de-DE',{weekday:'short'})}</text>`;
+ return`<svg viewBox="0 0 ${W} ${H+6}" role="img" aria-label="Verlauf der Salz-Wahrscheinlichkeit">${days}<polygon points="${b}${s}" fill="var(--hi)" opacity=".2"/>${bars}<path d="${a}" fill="none" stroke="var(--hi)" stroke-width="2"/></svg>`}
+
+// Lernen aus Beobachtungen
+async function learn(){const y1=obs.filter(o=>o.y).length,y0=obs.length-y1;
+ if(y1<2||y0<2){fit=null;sv('sz_fit',null);return}
+ const keys=[...new Set(obs.map(o=>o.lat+','+o.lon))],ps=keys.map(k=>[0,...k.split(',').map(Number)]);
+ const ws=await weather(ps,92),W={};keys.forEach((k,i)=>W[k]=ws[i]);
+ const pts=obs.map(o=>{const w=W[o.lat+','+o.lon],i=w.t.indexOf(o.t.slice(0,13)+':00');return i<0?null:{w,i,y:o.y}}).filter(Boolean);
+ if(pts.length<4)return;
+ const mem=new Map(),cost=th=>{let s=0;const cache=new Map();for(const p of pts){if(!cache.has(p.w))cache.set(p.w,run(p.w,th).P);s+=(cache.get(p.w)[p.i]-p.y)**2}
+  return s/pts.length+0.004*(((th.T0-PRI.T0)/1)**2+Math.log(th.kr/PRI.kr)**2+Math.log(th.kd/PRI.kd)**2+Math.log(th.a/PRI.a)**2)};
+ const brier=th=>{let s=0;for(const p of pts)s+=(run(p.w,th).P[p.i]-p.y)**2;return s/pts.length};
+ let th={...PRI},c=cost(th);
+ for(let r=0;r<4;r++)for(const k of Object.keys(th))for(const m of[0.5,0.75,0.9,1.1,1.33,2]){const t={...th};t[k]=k=='T0'?th[k]+(m-1)*2:th[k]*m;if(k=='a')t.a=Math.min(0.6,t.a);const cc=cost(t);if(cc<c){c=cc;th=t}}
+ fit={th,n:pts.length,b:brier(th),b0:brier(PRI)};sv('sz_fit',fit)}
+function quality(){const n=obs.length;let h=`<p class="sub" style="margin:0">Beobachtungen: ${n} (${obs.filter(o=>o.y).length} mit, ${obs.filter(o=>!o.y).length} ohne Salz).</p>`;
+ h+=fit?`<ul><li>Eichung aktiv mit ${fit.n} Beobachtungen.</li><li>Brier-Score geeicht: <b>${fit.b.toFixed(3)}</b> (Startwerte: ${fit.b0.toFixed(3)}, reines Raten: 0,250). Kleiner ist besser.</li><li>Die Güte gilt nur für Stellen und Zeiten, an denen du beobachtet hast. Mehr Beobachtungen, auch ohne Salz, verbessern sie.</li></ul>`
+ :`<ul><li>Noch nicht geeicht: Das Modell läuft mit Standardannahmen. Die angezeigte Spannweite zeigt nur die Unsicherheit dieser Annahmen, nicht die echte Trefferquote.</li><li>Das Lernen startet mit mindestens 2 Meldungen „Salz gesehen“ und 2 „Kein Salz“.</li></ul>`;
+ $('#gq').innerHTML=h}
+function opts(){$('#op').innerHTML=cur.map((p,i)=>`<option value="${i}">${p[0]}</option>`).join('');
+ const p=n=>String(n).padStart(2,'0'),d=new Date();if(!$('#ot').value)$('#ot').value=`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+ $('#ol').innerHTML=obs.length?'<ul>'+obs.map((o,i)=>`<li>${o.n}, ${o.t.replace('T',' ')}: ${o.y?'Salz':'kein Salz'} <button class="g" data-d="${i}" style="padding:0 6px">×</button></li>`).join('')+'</ul>':''}
+$('#ol').onclick=async e=>{const i=e.target.dataset.d;if(i==null)return;obs.splice(i,1);sv('sz_obs',obs);await learn();opts();check()};
+$('#oa').onclick=async()=>{const p=cur[$('#op').value];if(!p||!$('#ot').value)return;
+ obs.push({n:p[0],lat:p[1],lon:p[2],t:$('#ot').value,y:+$('#oy').value});sv('sz_obs',obs);
+ $('#st').textContent='Lerne aus Beobachtungen …';try{await learn()}catch(e){}check()};
+$('#ex').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify({obs,routes,fit})],{type:'application/json'}));a.download='salzlage-daten.json';a.click()};
+$('#im').onchange=async e=>{try{const d=JSON.parse(await e.target.files[0].text());obs=d.obs||[];routes={...DEF,...(d.routes||{})};fit=d.fit||null;sv('sz_obs',obs);sv('sz_routes',d.routes||{});sv('sz_fit',fit);fill();check()}catch(x){$('#st').textContent='Datei nicht lesbar.'}};
+$('#sv').onclick=async()=>{const q=$('#q').value.trim();if(!q)return;try{const pts=[];for(const n of q.split(/→|->|;|>/).map(s=>s.trim()).filter(Boolean))pts.push(await geo(n));
+ const nm=pts[0][0]+' → '+pts[pts.length-1][0];routes[nm]=pts;const u=ld('sz_routes',{});u[nm]=pts;sv('sz_routes',u);$('#q').value='';fill(nm);check()}catch(e){$('#st').className='err';$('#st').textContent=e.message}};
+function fill(sel){$('#rt').innerHTML=Object.keys(routes).map(k=>`<option>${k}</option>`).join('');$('#rt').value=sel||Object.keys(DEF)[0]}
+$('#go').onclick=check;$('#rt').onchange=()=>{$('#q').value='';check()};
+fill();quality();check();
+</script></body></html>
