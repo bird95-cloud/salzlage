@@ -108,6 +108,18 @@ function parseLine(t){const line=[];
  else{const d=new DOMParser().parseFromString(t,'text/xml');d.querySelectorAll('trkpt,rtept').forEach(e=>line.push([+e.getAttribute('lat'),+e.getAttribute('lon')]));
   if(!line.length){let c=d.querySelectorAll('LineString coordinates');if(!c.length)c=d.querySelectorAll('coordinates');c.forEach(e=>e.textContent.trim().split(/\s+/).forEach(z=>{const p=z.split(',').map(Number);if(p.length>=2&&!isNaN(p[0])&&!isNaN(p[1]))line.push([p[1],p[0]])}))}}
  if(line.length<2)throw Error('Keine Strecke in der Datei gefunden (erwartet: GPX, KML oder GeoJSON mit Linie).');return line}
+async function rev(lat,lon){const k=lat.toFixed(3)+','+lon.toFixed(3),c=ld('sz_geo',{});if(c[k])return c[k];
+ const j=await jget(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&accept-language=de&lat=${lat}&lon=${lon}`),a=j.address||{};
+ const r=a.road||a.pedestrian||a.path||a.cycleway||'',o=a.village||a.town||a.city||a.suburb||a.municipality||a.hamlet||'';
+ const l=[r?r+(a.house_number?' '+a.house_number:''):'',o].filter(Boolean).join(', ')||(j.display_name||'').split(',').slice(0,2).join(',');
+ c[k]=l;sv('sz_geo',c);return l}
+async function enrich(pts,key){const st=$('#st'),base=st.textContent;
+ for(let i=0;i<pts.length;i++){const p=pts[i];if(p[3]||!/^(km \d|Start|Ziel)/.test(p[0]))continue;
+  try{if(!ld('sz_geo',{})[p[1].toFixed(3)+','+p[2].toFixed(3)])await new Promise(r=>setTimeout(r,1100));
+   const l=await rev(p[1],p[2]);p[0]=p[0].match(/^(km \d+|Start|Ziel)/)[1]+': '+l;p[3]=1}
+  catch(e){st.textContent=base+' · Ortsnamen derzeit nicht abrufbar, Kilometer-Marker bleiben.';return}
+  if(cur!==pts)return;last[i].name=p[0];render();opts()}
+ if(key&&!DEF[key]){const u=ld('sz_routes',{});u[key]=pts;sv('sz_routes',u)}}
 async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';INFO=KEEP;KEEP='';
  try{let pts;const q=$('#q').value.trim();
   if(q)pts=await parse(q);else pts=routes[$('#rt').value];
@@ -119,7 +131,7 @@ async function check(){const st=$('#st');st.className='sub';st.textContent='Lade
    const rs=r.rs.length?r.rs[r.rs.length-1]:-1,rain=x.pr.slice(Math.max(ev,rs)+1).reduce((a,v)=>a+(v||0),0);
    return{name:pts[k][0],elev:w.elev,x,b,e,ev,rs,rw:th.rw,rain,T:x.T[x.T.length-1],Ts:x.soil[x.soil.length-1]}});
   selI=last.reduce((m,v,i)=>v.e.m>last[m].e.m?i:m,0);
-  st.textContent='Stand: '+fmt(hourNow())+(INFO?' · '+INFO:'');render();opts()}
+  st.textContent='Stand: '+fmt(hourNow())+(INFO?' · '+INFO:'');render();opts();enrich(pts,q?null:$('#rt').value)}
  catch(e){st.className='err';st.textContent=e.message+' – Internetverbindung prüfen.'}}
 
 const col=p=>`color-mix(in srgb,var(--hi) ${Math.round(p*100)}%,var(--lo))`;
