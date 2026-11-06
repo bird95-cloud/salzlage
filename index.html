@@ -26,7 +26,7 @@ svg{width:100%;height:auto;display:block}
 
 <div class="card">
 <div class="row"><select id="rt" aria-label="Strecke"></select><button id="go">Prüfen</button></div>
-<div class="row"><input id="q" placeholder="Eigene Strecke: Orte mit → trennen, z. B. Böblingen → Sindelfingen → Weil der Stadt">
+<div class="row"><input id="q" placeholder="Eigene Strecke: Orte mit Komma trennen (Böblingen, Sindelfingen) oder Google-Maps-Link einfügen">
 <button class="g" id="sv">Als Strecke speichern</button></div>
 <div id="st" class="sub" style="margin:0"></div>
 </div>
@@ -75,9 +75,30 @@ async function geo(n){const j=await jget(`https://geocoding-api.open-meteo.com/v
 const hourNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`}
 const fmt=s=>{const d=new Date(s);return d.toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'})+' Uhr'}
 
-async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';
+let INFO='';const SEP=/\s*(?:→|->|;|>|,|\s-\s|\s–\s)\s*/;
+const hav=(a,b)=>{const r=Math.PI/180,dl=(b[0]-a[0])*r,dn=(b[1]-a[1])*r,h=Math.sin(dl/2)**2+Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dn/2)**2;return 12742*Math.asin(Math.sqrt(h))};
+async function wpt(t){t=t.trim();const m=t.match(/^(-?\d+\.\d+),\s*(-?\d+\.\d+)$/);return m?['Punkt',+m[1],+m[2]]:await geo(t)}
+async function parse(q){
+ if(!/^https?:\/\//i.test(q)){const o=[];for(const n of q.split(SEP).map(s=>s.trim()).filter(Boolean))o.push(await geo(n));return o}
+ let u;try{u=new URL(q)}catch(e){throw Error('Link nicht lesbar.')}
+ if(/goo\.gl$/.test(u.hostname))throw Error('Kurzlinks kann der Browser nicht auflösen. Öffne den Link in Safari und kopiere die lange Adresse (google.com/maps/dir/…) aus der Adressleiste.');
+ const sp=u.searchParams;let names;
+ if(sp.get('destination'))names=[sp.get('origin'),...(sp.get('waypoints')||'').split('|').filter(Boolean),sp.get('destination')];
+ else{const i=u.pathname.indexOf('/dir/');if(i<0)throw Error('Das ist kein Google-Maps-Routenlink (…/maps/dir/…).');
+  names=u.pathname.slice(i+5).split('/').filter(x=>x&&!x.startsWith('@')&&!x.startsWith('data=')).map(x=>decodeURIComponent(x.replace(/\+/g,' ')))}
+ if(names.length<2)throw Error('Im Link fehlen Start oder Ziel.');
+ const w=[];for(const n of names)w.push(await wpt(n));
+ let line,note;
+ try{const j=await jget(`https://router.project-osrm.org/route/v1/driving/${w.map(p=>p[2]+','+p[1]).join(';')}?overview=full&geometries=geojson`);line=j.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);note='Straßenroute über OSRM'}
+ catch(e){line=w.map(p=>[p[1],p[2]]);note='nur Luftlinie zwischen den Orten (Routing nicht erreichbar)'}
+ const cum=[0];for(let i=1;i<line.length;i++)cum.push(cum[i-1]+hav(line[i-1],line[i]));
+ const tot=cum[cum.length-1],d=Math.max(5,tot/13),out=[];let k=0;
+ for(let s=0;s<tot;s+=d){while(cum[k+1]<s)k++;const f=(s-cum[k])/((cum[k+1]-cum[k])||1);out.push(['km '+Math.round(s),line[k][0]+(line[k+1][0]-line[k][0])*f,line[k][1]+(line[k+1][1]-line[k][1])*f])}
+ out.push(['Ziel '+w[w.length-1][0]+' ('+Math.round(tot)+' km)',...line[line.length-1]]);out[0][0]='Start '+w[0][0];
+ INFO=Math.round(tot)+' km, '+out.length+' Stichproben · '+note;return out}
+async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';INFO='';
  try{let pts;const q=$('#q').value.trim();
-  if(q){pts=[];for(const n of q.split(/→|->|;|>/).map(s=>s.trim()).filter(Boolean))pts.push(await geo(n))}else pts=routes[$('#rt').value];
+  if(q)pts=await parse(q);else pts=routes[$('#rt').value];
   const ws=await weather(pts,30),n=fit?fit.n:0,th=TH();cur=pts;
   last=ws.map((w,k)=>{let c=w.t.findIndex(t=>t>hourNow());c=c<0?w.t.length:c;
    const x={t:w.t.slice(0,c),T:w.T.slice(0,c),Td:w.Td.slice(0,c),pr:w.pr.slice(0,c),sn:w.sn.slice(0,c),soil:w.soil.slice(0,c)};
@@ -86,7 +107,7 @@ async function check(){const st=$('#st');st.className='sub';st.textContent='Lade
    const rs=r.rs.length?r.rs[r.rs.length-1]:-1,rain=x.pr.slice(Math.max(ev,rs)+1).reduce((a,v)=>a+(v||0),0);
    return{name:pts[k][0],elev:w.elev,x,b,e,ev,rs,rw:th.rw,rain,T:x.T[x.T.length-1],Ts:x.soil[x.soil.length-1]}});
   selI=last.reduce((m,v,i)=>v.e.m>last[m].e.m?i:m,0);
-  st.textContent='Stand: '+fmt(hourNow());render();opts()}
+  st.textContent='Stand: '+fmt(hourNow())+(INFO?' · '+INFO:'');render();opts()}
  catch(e){st.className='err';st.textContent=e.message+' – Internetverbindung prüfen.'}}
 
 const col=p=>`color-mix(in srgb,var(--hi) ${Math.round(p*100)}%,var(--lo))`;
@@ -137,7 +158,7 @@ $('#oa').onclick=async()=>{const p=cur[$('#op').value];if(!p||!$('#ot').value)re
  $('#st').textContent='Lerne aus Beobachtungen …';try{await learn()}catch(e){}check()};
 $('#ex').onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify({obs,routes,fit})],{type:'application/json'}));a.download='salzlage-daten.json';a.click()};
 $('#im').onchange=async e=>{try{const d=JSON.parse(await e.target.files[0].text());obs=d.obs||[];routes={...DEF,...(d.routes||{})};fit=d.fit||null;sv('sz_obs',obs);sv('sz_routes',d.routes||{});sv('sz_fit',fit);fill();check()}catch(x){$('#st').textContent='Datei nicht lesbar.'}};
-$('#sv').onclick=async()=>{const q=$('#q').value.trim();if(!q)return;try{const pts=[];for(const n of q.split(/→|->|;|>/).map(s=>s.trim()).filter(Boolean))pts.push(await geo(n));
+$('#sv').onclick=async()=>{const q=$('#q').value.trim();if(!q)return;try{const pts=await parse(q);
  const nm=pts[0][0]+' → '+pts[pts.length-1][0];routes[nm]=pts;const u=ld('sz_routes',{});u[nm]=pts;sv('sz_routes',u);$('#q').value='';fill(nm);check()}catch(e){$('#st').className='err';$('#st').textContent=e.message}};
 function fill(sel){$('#rt').innerHTML=Object.keys(routes).map(k=>`<option>${k}</option>`).join('');$('#rt').value=sel||Object.keys(DEF)[0]}
 $('#go').onclick=check;$('#rt').onchange=()=>{$('#q').value='';check()};
