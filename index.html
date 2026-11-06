@@ -27,7 +27,8 @@ svg{width:100%;height:auto;display:block}
 <div class="card">
 <div class="row"><select id="rt" aria-label="Strecke"></select><button id="go">Prüfen</button></div>
 <div class="row"><input id="q" placeholder="Eigene Strecke: Orte mit Komma trennen (Böblingen, Sindelfingen) oder Google-Maps-Link einfügen">
-<button class="g" id="sv">Als Strecke speichern</button></div>
+<button class="g" id="sv">Als Strecke speichern</button>
+<label class="g" style="border:1px solid var(--line);border-radius:4px;padding:8px 10px;cursor:pointer">GPX/KML laden<input type="file" id="gf" hidden></label></div>
 <div id="st" class="sub" style="margin:0"></div>
 </div>
 
@@ -71,7 +72,11 @@ function mc(w,th,n){const r=rng(42),g=()=>Math.sqrt(-2*Math.log(r()+1e-9))*Math.
 async function jget(u){const r=await fetch(u);if(!r.ok)throw Error('Datenabruf fehlgeschlagen ('+r.status+')');return r.json()}
 async function weather(pts,past){const j=await jget(`https://api.open-meteo.com/v1/forecast?latitude=${pts.map(p=>p[1]).join()}&longitude=${pts.map(p=>p[2]).join()}&hourly=temperature_2m,dew_point_2m,precipitation,snowfall,soil_temperature_0cm&past_days=${past}&forecast_days=1&timezone=Europe%2FBerlin`);
  return(Array.isArray(j)?j:[j]).map(o=>({t:o.hourly.time,T:o.hourly.temperature_2m,Td:o.hourly.dew_point_2m,pr:o.hourly.precipitation,sn:o.hourly.snowfall,soil:o.hourly.soil_temperature_0cm,elev:o.elevation}))}
-async function geo(n){const j=await jget(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(n)}&count=1&language=de`);const r=j.results?.[0];if(!r)throw Error('Ort nicht gefunden: '+n);return[r.name,r.latitude,r.longitude]}
+async function geo(n){const nm=n.split(',')[0].replace(/^\d{4,5}\s*/,'').trim()||n,low=n.toLowerCase();
+ const j=await jget(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(nm)}&count=10&language=de`),rs=j.results||[];
+ if(!rs.length)throw Error('Ort nicht gefunden: '+nm+(nm!=n?' (aus „'+n+'“)':''));
+ const r=rs.find(x=>x.country&&low.includes(x.country.toLowerCase()))||rs.find(x=>x.admin1&&low.includes(x.admin1.toLowerCase()))||rs[0];
+ return[r.name,r.latitude,r.longitude]}
 const hourNow=()=>{const d=new Date(),p=n=>String(n).padStart(2,'0');return`${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:00`}
 const fmt=s=>{const d=new Date(s);return d.toLocaleString('de-DE',{weekday:'short',hour:'2-digit',minute:'2-digit'})+' Uhr'}
 
@@ -91,12 +96,19 @@ async function parse(q){
  let line,note;
  try{const j=await jget(`https://router.project-osrm.org/route/v1/driving/${w.map(p=>p[2]+','+p[1]).join(';')}?overview=full&geometries=geojson`);line=j.routes[0].geometry.coordinates.map(c=>[c[1],c[0]]);note='Straßenroute über OSRM'}
  catch(e){line=w.map(p=>[p[1],p[2]]);note='nur Luftlinie zwischen den Orten (Routing nicht erreichbar)'}
- const cum=[0];for(let i=1;i<line.length;i++)cum.push(cum[i-1]+hav(line[i-1],line[i]));
+ const o2=sampleLine(line,w[0][0],w[w.length-1][0]);INFO+=' · '+note;return o2}
+let KEEP='';
+function sampleLine(line,a,b){const cum=[0];for(let i=1;i<line.length;i++)cum.push(cum[i-1]+hav(line[i-1],line[i]));
  const tot=cum[cum.length-1],d=Math.max(5,tot/13),out=[];let k=0;
  for(let s=0;s<tot;s+=d){while(cum[k+1]<s)k++;const f=(s-cum[k])/((cum[k+1]-cum[k])||1);out.push(['km '+Math.round(s),line[k][0]+(line[k+1][0]-line[k][0])*f,line[k][1]+(line[k+1][1]-line[k][1])*f])}
- out.push(['Ziel '+w[w.length-1][0]+' ('+Math.round(tot)+' km)',...line[line.length-1]]);out[0][0]='Start '+w[0][0];
- INFO=Math.round(tot)+' km, '+out.length+' Stichproben · '+note;return out}
-async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';INFO='';
+ out.push(['Ziel'+(b?' '+b:'')+' ('+Math.round(tot)+' km)',...line[line.length-1]]);out[0][0]='Start'+(a?' '+a:'');
+ INFO=Math.round(tot)+' km, '+out.length+' Stichproben';return out}
+function parseLine(t){const line=[];
+ if(/^\s*[{\[]/.test(t)){const f=[];(function w(o){if(!o)return;if(o.type==='LineString')f.push(o.coordinates);else if(o.type==='MultiLineString')o.coordinates.forEach(c=>f.push(c));else{(o.features||[]).forEach(w);w(o.geometry);(o.geometries||[]).forEach(w)}})(JSON.parse(t));f.forEach(c=>c.forEach(p=>line.push([p[1],p[0]])))}
+ else{const d=new DOMParser().parseFromString(t,'text/xml');d.querySelectorAll('trkpt,rtept').forEach(e=>line.push([+e.getAttribute('lat'),+e.getAttribute('lon')]));
+  if(!line.length){let c=d.querySelectorAll('LineString coordinates');if(!c.length)c=d.querySelectorAll('coordinates');c.forEach(e=>e.textContent.trim().split(/\s+/).forEach(z=>{const p=z.split(',').map(Number);if(p.length>=2&&!isNaN(p[0])&&!isNaN(p[1]))line.push([p[1],p[0]])}))}}
+ if(line.length<2)throw Error('Keine Strecke in der Datei gefunden (erwartet: GPX, KML oder GeoJSON mit Linie).');return line}
+async function check(){const st=$('#st');st.className='sub';st.textContent='Lade Wetterdaten …';INFO=KEEP;KEEP='';
  try{let pts;const q=$('#q').value.trim();
   if(q)pts=await parse(q);else pts=routes[$('#rt').value];
   const ws=await weather(pts,30),n=fit?fit.n:0,th=TH();cur=pts;
@@ -162,5 +174,6 @@ $('#sv').onclick=async()=>{const q=$('#q').value.trim();if(!q)return;try{const p
  const nm=pts[0][0]+' → '+pts[pts.length-1][0];routes[nm]=pts;const u=ld('sz_routes',{});u[nm]=pts;sv('sz_routes',u);$('#q').value='';fill(nm);check()}catch(e){$('#st').className='err';$('#st').textContent=e.message}};
 function fill(sel){$('#rt').innerHTML=Object.keys(routes).map(k=>`<option>${k}</option>`).join('');$('#rt').value=sel||Object.keys(DEF)[0]}
 $('#go').onclick=check;$('#rt').onchange=()=>{$('#q').value='';check()};
+$('#gf').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{const pts=sampleLine(parseLine(await f.text()),'','');const nm=f.name.replace(/\.[^.]+$/,'');routes[nm]=pts;const u=ld('sz_routes',{});u[nm]=pts;sv('sz_routes',u);KEEP=INFO;$('#q').value='';fill(nm);check()}catch(x){$('#st').className='err';$('#st').textContent=x.message}e.target.value=''};
 fill();quality();check();
 </script></body></html>
